@@ -1,0 +1,7 @@
+__pycache__/
+
+# Dataset
+output/*
+dependencies/*
+fact_verification/cache/*
+fact_verification/output/*

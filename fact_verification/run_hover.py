@@ -22,6 +22,7 @@ import logging
 import os
 import random
 import timeit
+import pandas as pd
 
 import json
 import numpy as np
@@ -33,34 +34,30 @@ from tqdm import tqdm, trange
 from sklearn.metrics import classification_report
 from sklearn.metrics import confusion_matrix
 
-NUM_LABELS = 3
-
-from my_transformers.modeling_bert import BertForSequenceClassification
 from transformers import (
     WEIGHTS_NAME,
     AdamW,
     BertConfig,
-    BertModel,
-    # BertForSequenceClassification,
     BertTokenizer,
+    ALBERT_PRETRAINED_CONFIG_ARCHIVE_MAP,
+    BERT_PRETRAINED_CONFIG_ARCHIVE_MAP,
     get_linear_schedule_with_warmup,
     squad_convert_examples_to_features,
     RobertaConfig,
     RobertaForSequenceClassification,
-    RobertaTokenizer,
-    AutoTokenizer
+    RobertaTokenizer
 )
 
 logger = logging.getLogger(__name__)
 
 ALL_MODELS = sum(
-    (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig,)),
-    # (tuple(conf.pretrained_config_archive_map.keys()) for conf in (RobertaConfig,)),
+    # (tuple(conf.pretrained_config_archive_map.keys()) for conf in (BertConfig,)),
+    (tuple(conf.pretrained_config_archive_map.keys()) for conf in (RobertaConfig,)),
     (),
 )
 
 MODEL_CLASSES = {
-    "bert": (BertConfig, BertForSequenceClassification, BertTokenizer),
+    "bert": (BertConfig, None, BertTokenizer),
     "roberta": (RobertaConfig, RobertaForSequenceClassification, RobertaTokenizer),
     # "xlnet": (XLNetConfig, XLNetForQuestionAnswering, XLNetTokenizer),
     # "xlm": (XLMConfig, XLMForQuestionAnswering, XLMTokenizer),
@@ -210,7 +207,7 @@ def train(args, train_dataset, model, tokenizer):
                 inputs["mask"] = batch[6]
                 # inputs["all_mapping"] = batch[6]
 
-            if args.model_type in ["xlm", "roberta", "distilbert", "bert"]:
+            if args.model_type in ["xlm", "roberta", "distilbert"]:
                 del inputs["token_type_ids"]
 
             if args.model_type in ["xlnet", "xlm"]:
@@ -340,6 +337,8 @@ def evaluate(args, model, tokenizer, global_step, prefix=""):
     logger.info("  Batch size = %d", args.eval_batch_size)
 
     all_results = []
+    logit_results = []
+    id_results = []
     start_time = timeit.default_timer()
 
     for batch in tqdm(eval_dataloader, desc="Evaluating"):
@@ -388,6 +387,15 @@ def evaluate(args, model, tokenizer, global_step, prefix=""):
                 result = HoverResult(unique_id, logits, probs)
 
             all_results.append(result)
+            
+            logit_results.append(logits)
+            id_results.append(unique_id)
+    d = {'id':id_results,'logit':logit_results}
+    df = pd.DataFrame(data=d)
+    df.to_csv('logit_results.csv')
+    
+
+    
 
     evalTime = timeit.default_timer() - start_time
     logger.info("  Evaluation done in total %f secs (%f sec per example)", evalTime, evalTime / len(dataset))
@@ -402,7 +410,7 @@ def evaluate(args, model, tokenizer, global_step, prefix=""):
     else:
         output_prediction_file = os.path.join(output_dir, "predictions_{}.json".format(prefix))
 
-    #output_nbest_file = os.path.join(args.output_dir, "nbest_predictions_{}.json".format(prefix))
+    # output_nbest_file = os.path.join(args.output_dir, "nbest_predictions_{}.json".format(prefix))
 
     # XLNet and XLM use a more complex post-processing procedure
     if args.model_type in ["xlnet", "xlm"]:
@@ -435,16 +443,20 @@ def evaluate(args, model, tokenizer, global_step, prefix=""):
 
     # Print the classification report and confusion matrix
     y_true, y_pred = [], []
+    target_names = []
+    target_map = {}
 
-    target_names = ['SUPPORTED', 'REFUTED', 'NEI']
-    target_map = {'SUPPORTED': 0, 'REFUTED': 1, 'NEI': 2}
-    print(target_names)
+    if args.num_labels == 3:
+        target_names = ['SUPPORTED', 'REFUTED', 'NEI']
+        target_map = {'SUPPORTED': 0, 'REFUTED': 1, 'NEI': 2}
+    elif args.num_labels == 2:
+        target_names = ['SUPPORTED', 'NOT_SUPPORTED']
+        target_map = {'SUPPORTED': 0, 'NOT_SUPPORTED': 1}
     
     for ID, pred in predictions.items():
         y_true.append(target_map[pred['gold_label']])
         y_pred.append(target_map[pred['predicted_label']])
-
-    # print(classification_report(y_true, y_pred, target_names=target_names, digits = 3))
+    print(classification_report(y_true, y_pred, target_names=target_names, digits = 3))
     print()
     print(confusion_matrix(y_true, y_pred))
 
@@ -637,6 +649,13 @@ def main():
         default=6,
         type=int,
         help="The maximum total number of sentence per document, when doing sentence retrieval.",
+    )
+
+    parser.add_argument(
+        "--num_labels",
+        default=2,
+        type=int,
+        help="The number of class labels.",
     )
 
     parser.add_argument(
@@ -842,8 +861,8 @@ def main():
         args.config_name if args.config_name else args.model_name_or_path,
         cache_dir=args.cache_dir if args.cache_dir else None,
     )
-
-    config.num_labels = NUM_LABELS
+    if args.sub_task == 'claim_verification':
+        config.num_labels = args.num_labels
 
     tokenizer = tokenizer_class.from_pretrained(
         args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
